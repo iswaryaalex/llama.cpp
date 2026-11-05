@@ -68,13 +68,37 @@ jobs:
             echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
           "$RUNNER_TEMP/rocm/bin/rocm-sdk" path --bin >> "$GITHUB_PATH"
-          # cmake/ninja from PyPI only where the host has none.
+
+      # ci/run.sh's gg_check_build_requirements wants git-lfs (initialised),
+      # pip3, cmake and ctest; these hosts are not all prepared for it, so fill
+      # gaps in a job-private bin dir rather than installing on the host.
+      - name: Build prerequisites
+        run: |
+          T="$RUNNER_TEMP/tools"; mkdir -p "$T"; echo "$T" >> "$GITHUB_PATH"
+          V="$RUNNER_TEMP/rocm/bin"
           if ! command -v cmake >/dev/null || ! command -v ninja >/dev/null; then
-            "$RUNNER_TEMP/rocm/bin/python" -m pip install cmake ninja
-            mkdir -p "$RUNNER_TEMP/tools"
-            ln -sf "$RUNNER_TEMP/rocm/bin/cmake" "$RUNNER_TEMP/tools/cmake"
-            ln -sf "$RUNNER_TEMP/rocm/bin/ninja" "$RUNNER_TEMP/tools/ninja"
-            echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+            "$V/python" -m pip install cmake ninja
+            ln -sf "$V/cmake" "$T/cmake"; ln -sf "$V/ctest" "$T/ctest"; ln -sf "$V/ninja" "$T/ninja"
+          fi
+          command -v pip3 >/dev/null || ln -sf "$V/pip3" "$T/pip3"
+          if ! command -v git-lfs >/dev/null; then
+            v=3.6.1
+            wget -q -O- "https://github.com/git-lfs/git-lfs/releases/download/v$v/git-lfs-linux-amd64-v$v.tar.gz" \
+              | tar -xz -C "$RUNNER_TEMP" && cp "$RUNNER_TEMP/git-lfs-$v/git-lfs" "$T/"
+          fi
+          # git lfs install edits the global config: give the job its own.
+          G="$RUNNER_TEMP/gitconfig"; [ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$G" || : > "$G"
+          echo "GIT_CONFIG_GLOBAL=$G" >> "$GITHUB_ENV"
+          GIT_CONFIG_GLOBAL="$G" PATH="$T:$PATH" git lfs install --skip-repo
+          # Build against TheRock's HIP headers, never a system /usr/include/hip
+          # (the R9700 VM template has an older one).
+          echo "HIPFLAGS=--rocm-path=$ROCM_PATH" >> "$GITHUB_ENV"
+          # ci/run.sh builds with -j$(nproc); a HIP compile needs ~2 GB, and the
+          # R9700 VM has 15 GB for 24 CPUs. Cap the parallelism on such hosts.
+          cpus=$(command nproc); mem=$(free -g | awk '/Mem/{print $2}')
+          if [ $((mem / 2)) -lt "$cpus" ]; then
+            printf '#!/bin/sh\necho %s\n' "$(( mem / 2 > 1 ? mem / 2 : 1 ))" > "$T/nproc"; chmod +x "$T/nproc"
+            echo "nproc capped at $(( mem / 2 > 1 ? mem / 2 : 1 )) (${mem}G RAM, ${cpus} CPUs)"
           fi
 
       - name: Test
