@@ -28,10 +28,13 @@ jobs:
             # Workaround for an async-execution correctness issue on integrated
             # RDNA3.5 (gfx1151), as in ci-self-hosted-cuda.yml.
             hip_launch_blocking: "1"
+            ephemeral: false
           - name: gfx1201 Radeon R9700
             target: gfx1201
             runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
             hip_launch_blocking: "0"
+            # A Proxmox clone destroyed after the job, so the job may change it.
+            ephemeral: true
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 180
 
@@ -90,9 +93,20 @@ jobs:
           G="$RUNNER_TEMP/gitconfig"; [ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$G" || : > "$G"
           echo "GIT_CONFIG_GLOBAL=$G" >> "$GITHUB_ENV"
           GIT_CONFIG_GLOBAL="$G" PATH="$T:$PATH" git lfs install --skip-repo
-          # Build against TheRock's HIP headers, never a system /usr/include/hip
-          # (the R9700 VM template has an older one).
+          # Build against TheRock's HIP headers, never a system /usr/include/hip.
+          # The R9700 VM template has an older one that wins over --rocm-path
+          # (ggml-common.h's <hip/hip_fp16.h> resolves to /usr/include). Only a
+          # throwaway VM gets it moved aside; a shared host is never changed.
           echo "HIPFLAGS=--rocm-path=$ROCM_PATH" >> "$GITHUB_ENV"
+          if [ -d /usr/include/hip ]; then
+            echo "system HIP headers: $(dpkg -S /usr/include/hip 2>/dev/null || echo 'no owning package')"
+            if [ "${{ matrix.ephemeral }}" = "true" ] && sudo -n true 2>/dev/null; then
+              sudo mv /usr/include/hip /usr/include/hip.system-disabled
+              echo "moved /usr/include/hip aside on this ephemeral VM"
+            else
+              echo "::warning::/usr/include/hip present and not moved; the HIP build may use it"
+            fi
+          fi
           # ci/run.sh builds with -j$(nproc); a HIP compile needs ~2 GB, and the
           # R9700 VM has 15 GB for 24 CPUs. Cap the parallelism on such hosts.
           cpus=$(command nproc); mem=$(free -g | awk '/Mem/{print $2}')
