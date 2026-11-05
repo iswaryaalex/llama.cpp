@@ -1,0 +1,94 @@
+name: XSJ Dispatch ROCm (gfx1151 Strix Halo, gfx1201 Radeon R9700)
+
+# Test branch: the llama.cpp ROCm CI from ci/gfx1151-devlab-dispatch, run on
+# XSJ Dispatch hardware. ROCm comes from TheRock wheels, including the per-GPU
+# device package (rocm[device-<gfx>]) that carries rocBLAS/Tensile kernels, so
+# the runner needs no ROCm install of its own.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - rradjabi/xsj-rocm-gfx1151-gfx1201
+    paths:
+      - '.github/workflows/xsj-dispatch-rocm.yml'
+
+jobs:
+  rocm:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gfx1151 Strix Halo
+            target: gfx1151
+            # Pinned: of the two Linux Strix Halo hosts only sjlab-stx-halo-19
+            # has a compiler toolchain today.
+            runs-on: [self-hosted, Linux, xsj-dispatch, strix-halo, host-sjlab-stx-halo-19]
+            # Workaround for an async-execution correctness issue on integrated
+            # RDNA3.5 (gfx1151), as in ci-self-hosted-cuda.yml.
+            hip_launch_blocking: "1"
+          - name: gfx1201 Radeon R9700
+            target: gfx1201
+            runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
+            hip_launch_blocking: "0"
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 180
+
+    env:
+      ROCM_VERSION: "10.0.0"
+      AMDGPU_TARGET: ${{ matrix.target }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Host inventory
+        run: |
+          echo "host=$(hostname) runner=$RUNNER_NAME kernel=$(uname -r)"
+          . /etc/os-release && echo "os=$PRETTY_NAME"
+          echo "cpus=$(nproc) mem=$(free -g | awk '/Mem/{print $2}')G"
+          df -h "$HOME" | tail -1
+          for b in python3 cmake ninja gcc g++ git wget; do
+            printf '%s=%s\n' "$b" "$(command -v $b || echo MISSING)"
+          done
+          ls -l /dev/kfd /dev/dri/renderD* || { echo "ERROR: no amdgpu compute device"; exit 1; }
+          id
+
+      - name: Setup TheRock with Wheels
+        run: |
+          python3 -m venv "$RUNNER_TEMP/rocm"
+          "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
+            "rocm[libraries,devel,device-${AMDGPU_TARGET}]==${ROCM_VERSION}"
+          ROCM_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --root)
+          {
+            echo "ROCM_PATH=$ROCM_PATH"
+            echo "HIP_PATH=$ROCM_PATH"
+            echo "CMAKE_PREFIX_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --cmake)"
+            echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/rocm/bin/rocm-sdk" path --bin >> "$GITHUB_PATH"
+          # cmake/ninja from PyPI only where the host has none.
+          if ! command -v cmake >/dev/null || ! command -v ninja >/dev/null; then
+            "$RUNNER_TEMP/rocm/bin/python" -m pip install cmake ninja
+            mkdir -p "$RUNNER_TEMP/tools"
+            ln -sf "$RUNNER_TEMP/rocm/bin/cmake" "$RUNNER_TEMP/tools/cmake"
+            ln -sf "$RUNNER_TEMP/rocm/bin/ninja" "$RUNNER_TEMP/tools/ninja"
+            echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+          fi
+
+      - name: Test
+        env:
+          HIP_LAUNCH_BLOCKING: ${{ matrix.hip_launch_blocking }}
+        run: |
+          rocminfo | grep -E "Marketing Name|Name: +gfx" | sort -u
+          GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=${AMDGPU_TARGET} \
+            bash ./ci/run.sh "$HOME/results/llama.cpp-${AMDGPU_TARGET}" "$HOME/mnt/llama.cpp"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-${{ matrix.target }}
+          path: ~/results/llama.cpp-${{ matrix.target }}/*.log
+          if-no-files-found: ignore
