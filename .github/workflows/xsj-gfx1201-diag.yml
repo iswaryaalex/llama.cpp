@@ -14,38 +14,26 @@ on:
 
 jobs:
   tiled:
-    name: tiled-mulmat x30 on ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: R9700 VM
-            runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
-          - name: halo-19 bare metal
-            runs-on: [self-hosted, Linux, xsj-dispatch, strix-halo, host-sjlab-stx-halo-19]
-    runs-on: ${{ matrix.runs-on }}
+    name: tiled-mulmat on R9700 VM, isolate the cause
+    runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
     timeout-minutes: 60
     steps:
       - name: Clone
         uses: actions/checkout@v6
 
-      - name: CPU-only Release build
+      - name: Builds (native, and AVX2 without AVX-512)
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_OPENSSL=OFF -DGGML_SCHED_NO_REALLOC=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_OPENSSL=OFF
           cmake --build build -j "$(nproc)" --target test-tiled-mulmat
+          cmake -B build-avx2 -DCMAKE_BUILD_TYPE=Release -DLLAMA_OPENSSL=OFF -DGGML_NATIVE=OFF \
+            -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_AVX512=OFF
+          cmake --build build-avx2 -j "$(nproc)" --target test-tiled-mulmat
 
-      - name: Loop
+      - name: Loops
         run: |
-          echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2) x$(nproc); flags: $(grep -m1 -o 'avx512[a-z_]*' /proc/cpuinfo | sort -u | tr '\n' ' ')"
-          fails=0
-          for i in $(seq 1 30); do
-            if ! ./build/bin/test-tiled-mulmat > "$RUNNER_TEMP/run-$i.log" 2>&1; then
-              fails=$((fails+1))
-              echo "run $i FAIL: $(grep -m2 'FAIL' "$RUNNER_TEMP/run-$i.log" | tr '\n' ' ')"
-            fi
-          done
-          echo "RESULT: $fails of 30 runs failed"
-          echo "--- one run single-threaded (GGML_N_THREADS has no effect here; OMP_NUM_THREADS=1)"
-          fails1=0
-          for i in $(seq 1 10); do OMP_NUM_THREADS=1 ./build/bin/test-tiled-mulmat > /dev/null 2>&1 || fails1=$((fails1+1)); done
-          echo "RESULT single-thread: $fails1 of 10 runs failed"
+          uname -r; grep -m1 'model name' /proc/cpuinfo; nproc
+          loop() { local name=$1 n=$2; shift 2; local f=0; for i in $(seq 1 $n); do "$@" > /dev/null 2>&1 || f=$((f+1)); done; echo "RESULT $name: $f of $n failed"; }
+          loop native            20 ./build/bin/test-tiled-mulmat
+          loop avx2-no-avx512    20 ./build-avx2/bin/test-tiled-mulmat
+          loop native-pinned-cpu0 20 taskset -c 0 ./build/bin/test-tiled-mulmat
+          loop native-pinned-cpu0-3 20 taskset -c 0-3 ./build/bin/test-tiled-mulmat
