@@ -1,10 +1,8 @@
 name: XSJ gfx1201 diagnostic (R9700)
 
-# test-llama-context, test-speculative-rejection-sampling and
-# test-thread-safety fail on the R9700 with "the operation cannot be performed
-# in the present state" (hipErrorIllegalState). All three drive several
-# contexts from parallel threads, and HIP graphs (stream capture) are on by
-# default. Atomics fixed (r9700-gpu mapping); now testing hipBLASLt under graph capture.
+# test-tiled-mulmat (CPU backend only: tiled vs reference CPU matmul) fails
+# intermittently in Release on the R9700 VM (iq2_xs, then iq2_xxs) and passes
+# on bare-metal Strix Halo. Loop it on both to see whether it is the VM's CPU.
 
 on:
   workflow_dispatch:
@@ -15,67 +13,39 @@ on:
       - '.github/workflows/xsj-gfx1201-diag.yml'
 
 jobs:
-  diag:
-    name: gfx1201 parallelism and HIP log
-    runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
-    timeout-minutes: 90
-    env:
-      ROCM_VERSION: "10.0.0"
-
+  tiled:
+    name: tiled-mulmat x30 on ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: R9700 VM
+            runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
+          - name: halo-19 bare metal
+            runs-on: [self-hosted, Linux, xsj-dispatch, strix-halo, host-sjlab-stx-halo-19]
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 60
     steps:
       - name: Clone
         uses: actions/checkout@v6
 
-      - name: Setup TheRock with Wheels
+      - name: CPU-only Release build
         run: |
-          python3 -m venv "$RUNNER_TEMP/rocm"
-          "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
-            "rocm[libraries,devel,device-gfx1201]==${ROCM_VERSION}"
-          ROCM_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --root)
-          {
-            echo "ROCM_PATH=$ROCM_PATH"
-            echo "HIP_PATH=$ROCM_PATH"
-            echo "CMAKE_PREFIX_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --cmake)"
-            echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
-          "$RUNNER_TEMP/rocm/bin/rocm-sdk" path --bin >> "$GITHUB_PATH"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_OPENSSL=OFF -DGGML_SCHED_NO_REALLOC=ON
+          cmake --build build -j "$(nproc)" --target test-tiled-mulmat
 
-      - name: Build (Debug, as ci/run.sh ctest_debug)
+      - name: Loop
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLLAMA_FATAL_WARNINGS=ON -DLLAMA_OPENSSL=OFF \
-            -DGGML_SCHED_NO_REALLOC=ON -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" -DGGML_HIP=ON -DGPU_TARGETS=gfx1201
-          cmake --build build -j "$(nproc)"
-
-      - name: Fixtures (generated models, downloaded model)
-        run: |
-          cd build
-          ctest -R 'test-generate-models|test-download-model' --output-on-failure
-          ctest -N -V -R '^(test-llama-context|test-thread-safety)$' | grep -E "Test command:" | tee "$RUNNER_TEMP/cmds.txt"
-
-      - name: Parallelism and HIP log
-        env:
-          GGML_SCHED_DEBUG_REALLOC: "1"
-        run: |
-          set +e
-          cd build
-          ctx="bin/test-llama-context --models tests/test-models/"
-          ts="bin/test-thread-safety -m tinyllamas/stories15M-q4_0.gguf -ngl 99 -p hello -n 128 -c 256 -ub 32 -t 2 -np"
-          run() { local name=$1; shift; timeout 600 "$@" > "$RUNNER_TEMP/$name.log" 2>&1; local rc=$?; echo "RESULT $name: exit $rc ($(grep -c 'ROCm error' "$RUNNER_TEMP/$name.log") ROCm errors)"; }
-          ops="bin/test-backend-ops -o MUL_MAT -b ROCm0"
-          run mm-default $ops
-          ROCBLAS_USE_HIPBLASLT=0 run mm-nohipblaslt $ops
-          GGML_CUDA_DISABLE_GRAPHS=1 run mm-nographs $ops
-          GGML_CUDA_DISABLE_GRAPHS=1 run ctx-nographs $ctx
-          for f in mm-default mm-nohipblaslt mm-nographs ctx-nographs; do
-            echo "--- $f"; grep -hE "tests passed|FAIL|Hip error|ROCm error" "$RUNNER_TEMP/$f.log" | grep -v "OK$" | head -6
+          echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2) x$(nproc); flags: $(grep -m1 -o 'avx512[a-z_]*' /proc/cpuinfo | sort -u | tr '\n' ' ')"
+          fails=0
+          for i in $(seq 1 30); do
+            if ! ./build/bin/test-tiled-mulmat > "$RUNNER_TEMP/run-$i.log" 2>&1; then
+              fails=$((fails+1))
+              echo "run $i FAIL: $(grep -m2 'FAIL' "$RUNNER_TEMP/run-$i.log" | tr '\n' ' ')"
+            fi
           done
-
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gfx1201-diag-logs
-          path: |
-            ${{ runner.temp }}/*.log
-            ${{ runner.temp }}/ctx-hip.log.gz
-          if-no-files-found: ignore
+          echo "RESULT: $fails of 30 runs failed"
+          echo "--- one run single-threaded (GGML_N_THREADS has no effect here; OMP_NUM_THREADS=1)"
+          fails1=0
+          for i in $(seq 1 10); do OMP_NUM_THREADS=1 ./build/bin/test-tiled-mulmat > /dev/null 2>&1 || fails1=$((fails1+1)); done
+          echo "RESULT single-thread: $fails1 of 10 runs failed"
