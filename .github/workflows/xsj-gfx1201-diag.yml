@@ -61,11 +61,13 @@ jobs:
           ctx="bin/test-llama-context --models tests/test-models/"
           ts="bin/test-thread-safety -m tinyllamas/stories15M-q4_0.gguf -ngl 99 -p hello -n 128 -c 256 -ub 32 -t 2 -np"
           run() { local name=$1; shift; timeout 600 "$@" > "$RUNNER_TEMP/$name.log" 2>&1; local rc=$?; echo "RESULT $name: exit $rc ($(grep -c 'ROCm error' "$RUNNER_TEMP/$name.log") ROCm errors)"; }
-          run ctx-default $ctx
+          ops="bin/test-backend-ops -o MUL_MAT -b ROCm0"
+          run mm-default $ops
+          ROCBLAS_USE_HIPBLASLT=0 run mm-nohipblaslt $ops
+          GGML_CUDA_DISABLE_GRAPHS=1 run mm-nographs $ops
           GGML_CUDA_DISABLE_GRAPHS=1 run ctx-nographs $ctx
-          ROCBLAS_USE_HIPBLASLT=0 run ctx-nohipblaslt $ctx
-          for f in ctx-default ctx-nographs ctx-nohipblaslt; do
-            echo "--- $f"; grep -hE "Hip error|ROCm error|hipError|Segmentation|SIGSEGV|FAIL" "$RUNNER_TEMP/$f.log" | sort | uniq -c | head -5
+          for f in mm-default mm-nohipblaslt mm-nographs ctx-nographs; do
+            echo "--- $f"; grep -hE "tests passed|FAIL|Hip error|ROCm error" "$RUNNER_TEMP/$f.log" | grep -v "OK$" | head -6
           done
 
       - name: Upload logs
