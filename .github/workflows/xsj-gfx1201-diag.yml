@@ -57,15 +57,16 @@ jobs:
         env:
           GGML_SCHED_DEBUG_REALLOC: "1"
         run: |
+          set +e
           cd build
-          ctx=$(grep -m1 "test-llama-context" "$RUNNER_TEMP/cmds.txt" | sed 's/.*Test command: //')
-          ts=$(grep -m1 "test-thread-safety" "$RUNNER_TEMP/cmds.txt" | sed 's/.*Test command: //' | sed 's/-np 4/-np NP/')
+          ctx="bin/test-llama-context --models tests/test-models/"
+          ts="bin/test-thread-safety -m tinyllamas/stories15M-q4_0.gguf -ngl 99 -p hello -n 128 -c 256 -ub 32 -t 2 -np"
           run() { local name=$1; shift; timeout 600 "$@" > "$RUNNER_TEMP/$name.log" 2>&1; local rc=$?; echo "RESULT $name: exit $rc ($(grep -c 'ROCm error' "$RUNNER_TEMP/$name.log") ROCm errors)"; }
-          run ctx-j1  $ctx -j 1
-          run ctx-j2  $ctx -j 2
-          run ctx-j4  $ctx -j 4
-          run ts-np1  ${ts/NP/1}
-          run ts-np4  ${ts/NP/4}
+          run ctx-j1 $ctx -j 1
+          run ctx-j2 $ctx -j 2
+          run ctx-j4 $ctx -j 4
+          run ts-np1 $ts 1
+          run ts-np4 $ts 4
           echo "=== HIP API log, test-llama-context -j 4"
           AMD_LOG_LEVEL=3 timeout 600 $ctx -j 4 > "$RUNNER_TEMP/ctx-hip.log" 2>&1
           ls -l "$RUNNER_TEMP/ctx-hip.log"
