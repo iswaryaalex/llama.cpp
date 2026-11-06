@@ -1,8 +1,11 @@
 name: XSJ gfx1201 diagnostic (R9700)
 
-# The three ctest failures on the R9700 VM ("the operation cannot be performed
-# in the present state"), run alone with HIP runtime logging, on two TheRock
-# releases side by side.
+# test-llama-context, test-speculative-rejection-sampling and
+# test-thread-safety fail on the R9700 with "the operation cannot be performed
+# in the present state" (hipErrorIllegalState). All three drive several
+# contexts from parallel threads, and HIP graphs (stream capture) are on by
+# default. One job turns graphs off; the other keeps them on and logs every HIP
+# call to find the one that fails.
 
 on:
   workflow_dispatch:
@@ -14,13 +17,23 @@ on:
 
 jobs:
   diag:
-    name: gfx1201 TheRock ${{ matrix.rocm }}
+    name: gfx1201 ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        rocm: ["10.0.0", "10.1.0"]
+        include:
+          - name: graphs off
+            tests: 'test-llama-context|test-speculative-rejection-sampling|test-thread-safety'
+            disable_graphs: "1"
+            log_level: "0"
+          - name: graphs on, HIP API log
+            tests: 'test-llama-context'
+            disable_graphs: ""
+            log_level: "4"
     runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
     timeout-minutes: 90
+    env:
+      ROCM_VERSION: "10.0.0"
 
     steps:
       - name: Clone
@@ -30,7 +43,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/rocm"
           "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
-            "rocm[libraries,devel,device-gfx1201]==${{ matrix.rocm }}"
+            "rocm[libraries,devel,device-gfx1201]==${ROCM_VERSION}"
           ROCM_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --root)
           {
             echo "ROCM_PATH=$ROCM_PATH"
@@ -46,23 +59,36 @@ jobs:
             -DGGML_SCHED_NO_REALLOC=ON -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" -DGGML_HIP=ON -DGPU_TARGETS=gfx1201
           cmake --build build -j "$(nproc)"
 
-      - name: Failing tests with HIP logging
-        env:
-          AMD_LOG_LEVEL: "2"
+      - name: Tests
         run: |
-          rocminfo | grep -E "Runtime Version|Marketing Name|Name: +gfx" | sort -u
+          [ -n "${{ matrix.disable_graphs }}" ] && export GGML_CUDA_DISABLE_GRAPHS=1
+          export AMD_LOG_LEVEL=${{ matrix.log_level }}
+          [ "$AMD_LOG_LEVEL" != 0 ] && export AMD_LOG_LEVEL_FILE="$RUNNER_TEMP/hip-api.log"
           cd build
           set +e
-          ctest -L main -R 'test-llama-context|test-speculative-rejection-sampling|test-thread-safety' \
-            --output-on-failure --timeout 900 > "$RUNNER_TEMP/ctest.log" 2>&1
+          ctest -L main -R '${{ matrix.tests }}' --output-on-failure --timeout 900 > "$RUNNER_TEMP/ctest.log" 2>&1
           rc=$?
           set -e
-          grep -nE "Test +#|Passed|Failed|Exception|Timeout|ROCm error|in function|current device|:E |hipError|HSA_STATUS|Memory access fault|tests passed" "$RUNNER_TEMP/ctest.log" | head -150
+          grep -nE "Test +#|tests passed|ROCm error|in function" "$RUNNER_TEMP/ctest.log" | head -40
+          if [ -f "$RUNNER_TEMP/hip-api.log" ]; then
+            ls -l "$RUNNER_TEMP/hip-api.log"
+            echo "--- first non-success HIP returns"
+            grep -nE "Returned hip(Error|ErrorIllegalState)|hipErrorIllegalState|IllegalState" "$RUNNER_TEMP/hip-api.log" | grep -v "hipSuccess" | head -10
+            first=$(grep -nE "hipErrorIllegalState" "$RUNNER_TEMP/hip-api.log" | head -1 | cut -d: -f1)
+            if [ -n "$first" ]; then
+              echo "--- 60 lines before line $first"
+              sed -n "$((first-60)),$((first+5))p" "$RUNNER_TEMP/hip-api.log" | cut -c1-300
+            fi
+            gzip -k "$RUNNER_TEMP/hip-api.log"
+          fi
           exit $rc
 
-      - name: Upload log
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gfx1201-ctest-rocm-${{ matrix.rocm }}
-          path: ${{ runner.temp }}/ctest.log
+          name: gfx1201-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/ctest.log
+            ${{ runner.temp }}/hip-api.log.gz
+          if-no-files-found: ignore
