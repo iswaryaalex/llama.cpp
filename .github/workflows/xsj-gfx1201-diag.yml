@@ -1,0 +1,68 @@
+name: XSJ gfx1201 diagnostic (R9700)
+
+# The three ctest failures on the R9700 VM ("the operation cannot be performed
+# in the present state"), run alone with HIP runtime logging, on two TheRock
+# releases side by side.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - rradjabi/gfx1201-diag
+    paths:
+      - '.github/workflows/xsj-gfx1201-diag.yml'
+
+jobs:
+  diag:
+    name: gfx1201 TheRock ${{ matrix.rocm }}
+    strategy:
+      fail-fast: false
+      matrix:
+        rocm: ["10.0.0", "10.1.0"]
+    runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
+    timeout-minutes: 90
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Setup TheRock with Wheels
+        run: |
+          python3 -m venv "$RUNNER_TEMP/rocm"
+          "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
+            "rocm[libraries,devel,device-gfx1201]==${{ matrix.rocm }}"
+          ROCM_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --root)
+          {
+            echo "ROCM_PATH=$ROCM_PATH"
+            echo "HIP_PATH=$ROCM_PATH"
+            echo "CMAKE_PREFIX_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --cmake)"
+            echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/rocm/bin/rocm-sdk" path --bin >> "$GITHUB_PATH"
+
+      - name: Build (Debug, as ci/run.sh ctest_debug)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLLAMA_FATAL_WARNINGS=ON -DLLAMA_OPENSSL=OFF \
+            -DGGML_SCHED_NO_REALLOC=ON -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" -DGGML_HIP=ON -DGPU_TARGETS=gfx1201
+          cmake --build build -j "$(nproc)"
+
+      - name: Failing tests with HIP logging
+        env:
+          AMD_LOG_LEVEL: "2"
+        run: |
+          rocminfo | grep -E "Runtime Version|Marketing Name|Name: +gfx" | sort -u
+          cd build
+          set +e
+          ctest -L main -R 'test-llama-context|test-speculative-rejection-sampling|test-thread-safety' \
+            --output-on-failure --timeout 900 > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          grep -nE "Test +#|Passed|Failed|Exception|Timeout|ROCm error|in function|current device|:E |hipError|HSA_STATUS|Memory access fault|tests passed" "$RUNNER_TEMP/ctest.log" | head -150
+          exit $rc
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx1201-ctest-rocm-${{ matrix.rocm }}
+          path: ${{ runner.temp }}/ctest.log
