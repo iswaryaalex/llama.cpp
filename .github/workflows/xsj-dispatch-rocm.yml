@@ -1,10 +1,5 @@
 name: XSJ Dispatch ROCm (gfx1151 Strix Halo, gfx1201 Radeon R9700)
 
-# Test branch: the llama.cpp ROCm CI from ci/gfx1151-devlab-dispatch, run on
-# XSJ Dispatch hardware. ROCm comes from TheRock wheels, including the per-GPU
-# device package (rocm[device-<gfx>]) that carries rocBLAS/Tensile kernels, so
-# the runner needs no ROCm install of its own.
-
 on:
   workflow_dispatch:
   push:
@@ -14,55 +9,38 @@ on:
       - '.github/workflows/xsj-dispatch-rocm.yml'
 
 jobs:
-  rocm:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: gfx1151 Strix Halo
-            target: gfx1151
-            # Pinned: of the two Linux Strix Halo hosts only sjlab-stx-halo-19
-            # has a compiler toolchain today.
-            runs-on: [self-hosted, Linux, xsj-dispatch, strix-halo, host-sjlab-stx-halo-19]
-            # Workaround for an async-execution correctness issue on integrated
-            # RDNA3.5 (gfx1151), as in ci-self-hosted-cuda.yml.
-            hip_launch_blocking: "1"
-            ephemeral: false
-          - name: gfx1201 Radeon R9700
-            target: gfx1201
-            runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
-            hip_launch_blocking: "0"
-            # A Proxmox clone destroyed after the job, so the job may change it.
-            ephemeral: true
-    runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: 180
-
-    env:
-      ROCM_VERSION: "10.0.0"
-      AMDGPU_TARGET: ${{ matrix.target }}
+  gfx1201-radeon-r9700:
+    runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
 
     steps:
       - name: Clone
+        id: checkout
         uses: actions/checkout@v6
 
-      - name: Host inventory
+      - name: Test
+        id: ggml-ci
         run: |
-          echo "host=$(hostname) runner=$RUNNER_NAME kernel=$(uname -r)"
-          . /etc/os-release && echo "os=$PRETTY_NAME"
-          echo "cpus=$(nproc) mem=$(free -g | awk '/Mem/{print $2}')G"
-          df -h "$HOME" | tail -1
-          for b in python3 cmake ninja gcc g++ git wget; do
-            printf '%s=%s\n' "$b" "$(command -v $b || echo MISSING)"
-          done
-          ls -l /dev/kfd /dev/dri/renderD* || { echo "ERROR: no amdgpu compute device"; exit 1; }
-          id
+          rocminfo
+          GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=gfx1201 bash ./ci/run.sh ~/results/llama.cpp ~/mnt/llama.cpp
+
+  gfx1151-strix-halo:
+    # The one Linux Strix Halo host with a build toolchain. It has no system
+    # ROCm, so ROCm comes from TheRock wheels, gfx1151 kernels included.
+    runs-on: [self-hosted, Linux, xsj-dispatch, strix-halo, host-sjlab-stx-halo-19]
+
+    env:
+      ROCM_VERSION: "10.0.0"
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v6
 
       - name: Setup TheRock with Wheels
         run: |
           python3 -m venv "$RUNNER_TEMP/rocm"
           "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
-            "rocm[libraries,devel,device-${AMDGPU_TARGET}]==${ROCM_VERSION}"
+            "rocm[libraries,devel,device-gfx1151]==${ROCM_VERSION}"
           ROCM_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --root)
           {
             echo "ROCM_PATH=$ROCM_PATH"
@@ -71,62 +49,15 @@ jobs:
             echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
           "$RUNNER_TEMP/rocm/bin/rocm-sdk" path --bin >> "$GITHUB_PATH"
-
-      # ci/run.sh's gg_check_build_requirements wants git-lfs (initialised),
-      # pip3, cmake and ctest; these hosts are not all prepared for it, so fill
-      # gaps in a job-private bin dir rather than installing on the host.
-      - name: Build prerequisites
-        run: |
-          T="$RUNNER_TEMP/tools"; mkdir -p "$T"; echo "$T" >> "$GITHUB_PATH"
-          V="$RUNNER_TEMP/rocm/bin"
-          if ! command -v cmake >/dev/null || ! command -v ninja >/dev/null; then
-            "$V/python" -m pip install cmake ninja
-            ln -sf "$V/cmake" "$T/cmake"; ln -sf "$V/ctest" "$T/ctest"; ln -sf "$V/ninja" "$T/ninja"
-          fi
-          command -v pip3 >/dev/null || ln -sf "$V/pip3" "$T/pip3"
-          if ! command -v git-lfs >/dev/null; then
-            v=3.6.1
-            wget -q -O- "https://github.com/git-lfs/git-lfs/releases/download/v$v/git-lfs-linux-amd64-v$v.tar.gz" \
-              | tar -xz -C "$RUNNER_TEMP" && cp "$RUNNER_TEMP/git-lfs-$v/git-lfs" "$T/"
-          fi
-          # git lfs install edits the global config: give the job its own.
-          G="$RUNNER_TEMP/gitconfig"; [ -f "$HOME/.gitconfig" ] && cp "$HOME/.gitconfig" "$G" || : > "$G"
-          echo "GIT_CONFIG_GLOBAL=$G" >> "$GITHUB_ENV"
-          GIT_CONFIG_GLOBAL="$G" PATH="$T:$PATH" git lfs install --skip-repo
-          # Build against TheRock's HIP headers, never a system /usr/include/hip.
-          # The R9700 VM template has an older one that wins over --rocm-path
-          # (ggml-common.h's <hip/hip_fp16.h> resolves to /usr/include). Only a
-          # throwaway VM gets it moved aside; a shared host is never changed.
-          echo "HIPFLAGS=--rocm-path=$ROCM_PATH" >> "$GITHUB_ENV"
-          if [ -d /usr/include/hip ]; then
-            echo "system HIP headers: $(dpkg -S /usr/include/hip 2>/dev/null || echo 'no owning package')"
-            if [ "${{ matrix.ephemeral }}" = "true" ] && sudo -n true 2>/dev/null; then
-              sudo mv /usr/include/hip /usr/include/hip.system-disabled
-              echo "moved /usr/include/hip aside on this ephemeral VM"
-            else
-              echo "::warning::/usr/include/hip present and not moved; the HIP build may use it"
-            fi
-          fi
-          # ci/run.sh builds with -j$(nproc); a HIP compile needs ~2 GB, and the
-          # R9700 VM has 15 GB for 24 CPUs. Cap the parallelism on such hosts.
-          cpus=$(command nproc); mem=$(free -g | awk '/Mem/{print $2}')
-          if [ $((mem / 2)) -lt "$cpus" ]; then
-            printf '#!/bin/sh\necho %s\n' "$(( mem / 2 > 1 ? mem / 2 : 1 ))" > "$T/nproc"; chmod +x "$T/nproc"
-            echo "nproc capped at $(( mem / 2 > 1 ? mem / 2 : 1 )) (${mem}G RAM, ${cpus} CPUs)"
-          fi
+          # ci/run.sh checks for pip3, which this host lacks.
+          mkdir -p "$RUNNER_TEMP/bin" && ln -sf "$RUNNER_TEMP/rocm/bin/pip3" "$RUNNER_TEMP/bin/pip3" && echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Test
+        id: ggml-ci
+        # HIP_LAUNCH_BLOCKING=1: workaround for an async-execution correctness
+        # issue on integrated RDNA3.5 (gfx1151), as in ci-self-hosted-cuda.yml.
         env:
-          HIP_LAUNCH_BLOCKING: ${{ matrix.hip_launch_blocking }}
+          HIP_LAUNCH_BLOCKING: "1"
         run: |
-          rocminfo | grep -E "Marketing Name|Name: +gfx" | sort -u
-          GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=${AMDGPU_TARGET} \
-            bash ./ci/run.sh "$HOME/results/llama.cpp-${AMDGPU_TARGET}" "$HOME/mnt/llama.cpp"
-
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-logs-${{ matrix.target }}
-          path: ~/results/llama.cpp-${{ matrix.target }}/*.log
-          if-no-files-found: ignore
+          rocminfo
+          GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=gfx1151 bash ./ci/run.sh ~/results/llama.cpp ~/mnt/llama.cpp
