@@ -14,26 +14,22 @@ on:
 
 jobs:
   tiled:
-    name: tiled-mulmat on R9700 VM, isolate the cause
+    name: static test-tiled-mulmat for the Proxmox host
     runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - name: Clone
         uses: actions/checkout@v6
 
-      - name: Builds (native, and AVX2 without AVX-512)
+      - name: Static native Release build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_OPENSSL=OFF
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_OPENSSL=OFF -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF
           cmake --build build -j "$(nproc)" --target test-tiled-mulmat
-          cmake -B build-avx2 -DCMAKE_BUILD_TYPE=Release -DLLAMA_OPENSSL=OFF -DGGML_NATIVE=OFF \
-            -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_AVX512=OFF
-          cmake --build build-avx2 -j "$(nproc)" --target test-tiled-mulmat
+          ldd build/bin/test-tiled-mulmat || true
+          f=0; for i in $(seq 1 10); do ./build/bin/test-tiled-mulmat > /dev/null 2>&1 || f=$((f+1)); done; echo "RESULT in VM: $f of 10 failed"
 
-      - name: Loops
-        run: |
-          uname -r; grep -m1 'model name' /proc/cpuinfo; nproc
-          loop() { local name=$1 n=$2; shift 2; local f=0; for i in $(seq 1 $n); do "$@" > /dev/null 2>&1 || f=$((f+1)); done; echo "RESULT $name: $f of $n failed"; }
-          loop native            20 ./build/bin/test-tiled-mulmat
-          loop avx2-no-avx512    20 ./build-avx2/bin/test-tiled-mulmat
-          loop native-pinned-cpu0 20 taskset -c 0 ./build/bin/test-tiled-mulmat
-          loop native-pinned-cpu0-3 20 taskset -c 0-3 ./build/bin/test-tiled-mulmat
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-tiled-mulmat-static
+          path: build/bin/test-tiled-mulmat
