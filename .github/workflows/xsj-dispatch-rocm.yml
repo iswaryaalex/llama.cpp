@@ -39,12 +39,6 @@ jobs:
 
       - name: Test
         id: ggml-ci
-        # Experiment: test-llama-context, test-speculative-rejection-sampling
-        # and test-thread-safety fail on gfx1201 with "the operation cannot be
-        # performed in the present state"; does serializing launches help, as
-        # it does on gfx1151?
-        env:
-          HIP_LAUNCH_BLOCKING: "1"
         run: |
           rocminfo
           GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=gfx1201 bash ./ci/run.sh ~/results/llama.cpp ~/mnt/llama.cpp
