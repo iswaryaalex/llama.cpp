@@ -12,10 +12,30 @@ jobs:
   gfx1201-radeon-r9700:
     runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
 
+    env:
+      ROCM_VERSION: "10.0.0"
+
     steps:
       - name: Clone
         id: checkout
         uses: actions/checkout@v6
+
+      # The host has ROCm 7.2.4, whose clang emits a wavefront-shift DPP
+      # instruction gfx1201 does not have in the mmf kernels. Build with the
+      # TheRock toolchain release.yml uses instead.
+      - name: Setup TheRock with Wheels
+        run: |
+          python3 -m venv "$RUNNER_TEMP/rocm"
+          "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
+            "rocm[libraries,devel,device-gfx1201]==${ROCM_VERSION}"
+          ROCM_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --root)
+          {
+            echo "ROCM_PATH=$ROCM_PATH"
+            echo "HIP_PATH=$ROCM_PATH"
+            echo "CMAKE_PREFIX_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --cmake)"
+            echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/rocm/bin/rocm-sdk" path --bin >> "$GITHUB_PATH"
 
       - name: Test
         id: ggml-ci
