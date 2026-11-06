@@ -39,6 +39,14 @@ jobs:
 
       - name: Test
         id: ggml-ci
+        # ROCBLAS_USE_HIPBLASLT=0: with HIP graphs on, hipBLASLt (TheRock 10.0.0,
+        # gfx1201) calls the legacy stream while llama.cpp is capturing, which
+        # fails with hipErrorStreamCaptureImplicit (906) "operation would make
+        # the legacy stream depend on a capturing blocking stream" and crashes
+        # test-llama-context. Route GEMMs through rocBLAS's own kernels until
+        # hipBLASLt is capture-safe; GGML_CUDA_DISABLE_GRAPHS=1 also works.
+        env:
+          ROCBLAS_USE_HIPBLASLT: "0"
         run: |
           rocminfo
           GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=gfx1201 bash ./ci/run.sh ~/results/llama.cpp ~/mnt/llama.cpp
