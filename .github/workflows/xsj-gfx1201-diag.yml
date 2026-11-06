@@ -17,19 +17,7 @@ on:
 
 jobs:
   diag:
-    name: gfx1201 ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: graphs off
-            tests: 'test-llama-context|test-speculative-rejection-sampling|test-thread-safety'
-            disable_graphs: "1"
-            log_level: "0"
-          - name: graphs on, HIP API log
-            tests: 'test-llama-context'
-            disable_graphs: ""
-            log_level: "4"
+    name: gfx1201 parallelism and HIP log
     runs-on: [self-hosted, Linux, xsj-dispatch, radeon-r9700]
     timeout-minutes: 90
     env:
@@ -59,36 +47,42 @@ jobs:
             -DGGML_SCHED_NO_REALLOC=ON -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" -DGGML_HIP=ON -DGPU_TARGETS=gfx1201
           cmake --build build -j "$(nproc)"
 
-      - name: Tests
+      - name: Fixtures (generated models, downloaded model)
         run: |
-          [ -n "${{ matrix.disable_graphs }}" ] && export GGML_CUDA_DISABLE_GRAPHS=1
-          export AMD_LOG_LEVEL=${{ matrix.log_level }}
-          [ "$AMD_LOG_LEVEL" != 0 ] && export AMD_LOG_LEVEL_FILE="$RUNNER_TEMP/hip-api.log"
           cd build
-          set +e
-          ctest -L main -R '${{ matrix.tests }}' --output-on-failure --timeout 900 > "$RUNNER_TEMP/ctest.log" 2>&1
-          rc=$?
-          set -e
-          grep -nE "Test +#|tests passed|ROCm error|in function" "$RUNNER_TEMP/ctest.log" | head -40
-          if [ -f "$RUNNER_TEMP/hip-api.log" ]; then
-            ls -l "$RUNNER_TEMP/hip-api.log"
-            echo "--- first non-success HIP returns"
-            grep -nE "Returned hip(Error|ErrorIllegalState)|hipErrorIllegalState|IllegalState" "$RUNNER_TEMP/hip-api.log" | grep -v "hipSuccess" | head -10
-            first=$(grep -nE "hipErrorIllegalState" "$RUNNER_TEMP/hip-api.log" | head -1 | cut -d: -f1)
-            if [ -n "$first" ]; then
-              echo "--- 60 lines before line $first"
-              sed -n "$((first-60)),$((first+5))p" "$RUNNER_TEMP/hip-api.log" | cut -c1-300
-            fi
-            gzip -k "$RUNNER_TEMP/hip-api.log"
+          ctest -R 'test-generate-models|test-download-model' --output-on-failure
+          ctest -N -V -R '^(test-llama-context|test-thread-safety)$' | grep -E "Test command:" | tee "$RUNNER_TEMP/cmds.txt"
+
+      - name: Parallelism and HIP log
+        env:
+          GGML_SCHED_DEBUG_REALLOC: "1"
+        run: |
+          cd build
+          ctx=$(grep -m1 "test-llama-context" "$RUNNER_TEMP/cmds.txt" | sed 's/.*Test command: //')
+          ts=$(grep -m1 "test-thread-safety" "$RUNNER_TEMP/cmds.txt" | sed 's/.*Test command: //' | sed 's/-np 4/-np NP/')
+          run() { local name=$1; shift; timeout 600 "$@" > "$RUNNER_TEMP/$name.log" 2>&1; local rc=$?; echo "RESULT $name: exit $rc ($(grep -c 'ROCm error' "$RUNNER_TEMP/$name.log") ROCm errors)"; }
+          run ctx-j1  $ctx -j 1
+          run ctx-j2  $ctx -j 2
+          run ctx-j4  $ctx -j 4
+          run ts-np1  ${ts/NP/1}
+          run ts-np4  ${ts/NP/4}
+          echo "=== HIP API log, test-llama-context -j 4"
+          AMD_LOG_LEVEL=3 timeout 600 $ctx -j 4 > "$RUNNER_TEMP/ctx-hip.log" 2>&1
+          ls -l "$RUNNER_TEMP/ctx-hip.log"
+          grep -nE "hipError[A-Za-z]+" "$RUNNER_TEMP/ctx-hip.log" | grep -v "hipSuccess" | head -15
+          first=$(grep -nE "hipErrorIllegalState|Returned hipError" "$RUNNER_TEMP/ctx-hip.log" | head -1 | cut -d: -f1)
+          if [ -n "$first" ]; then
+            echo "--- 40 lines before line $first"
+            sed -n "$((first-40)),$((first+3))p" "$RUNNER_TEMP/ctx-hip.log" | cut -c1-260
           fi
-          exit $rc
+          gzip -k "$RUNNER_TEMP/ctx-hip.log"
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gfx1201-${{ strategy.job-index }}
+          name: gfx1201-diag-logs
           path: |
-            ${{ runner.temp }}/ctest.log
-            ${{ runner.temp }}/hip-api.log.gz
+            ${{ runner.temp }}/*.log
+            ${{ runner.temp }}/ctx-hip.log.gz
           if-no-files-found: ignore
