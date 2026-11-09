@@ -34,6 +34,10 @@ else
     exit 1
 fi
 
+# HF_ENDPOINT points --repo/--file downloads at a mirror, as in huggingface_hub
+hf_endpoint="${HF_ENDPOINT:-https://huggingface.co}"
+hf_endpoint="${hf_endpoint%/}"
+
 url=""
 repo=""
 file=""
@@ -69,7 +73,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ -n "$repo" ] && [ -n "$file" ]; then
-    url="https://huggingface.co/$repo/resolve/main/$file"
+    url="$hf_endpoint/$repo/resolve/main/$file"
 fi
 
 if [ -z "$url" ]; then
@@ -84,6 +88,10 @@ if [[ ${#url} -gt 22 ]]; then
     if [[ ${url:0:22} == "https://huggingface.co" ]]; then
         is_url=true
     fi
+fi
+
+if [[ "$url" == "$hf_endpoint"/* ]]; then
+    is_url=true
 fi
 
 if [ "$is_url" = false ]; then

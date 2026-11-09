@@ -55,6 +55,10 @@ sd=`dirname $0`
 cd $sd/../
 SRC=`pwd`
 
+# model downloads honour HF_ENDPOINT (as huggingface_hub does), so a runner can use a local mirror
+HF_URL="${HF_ENDPOINT:-https://huggingface.co}"
+HF_URL="${HF_URL%/}"
+
 CMAKE_EXTRA="-DLLAMA_FATAL_WARNINGS=${LLAMA_FATAL_WARNINGS:-ON} -DLLAMA_OPENSSL=OFF -DGGML_SCHED_NO_REALLOC=ON"
 CTEST_EXTRA=""
 
@@ -357,14 +361,14 @@ function gg_run_ctest_with_model_release {
 function gg_run_qwen3_0_6b {
     cd ${SRC}
 
-    gg_wget models-mnt/qwen3/0.6B/ https://huggingface.co/Qwen/Qwen3-0.6B-Base/raw/main/config.json
-    gg_wget models-mnt/qwen3/0.6B/ https://huggingface.co/Qwen/Qwen3-0.6B-Base/raw/main/tokenizer.json
-    gg_wget models-mnt/qwen3/0.6B/ https://huggingface.co/Qwen/Qwen3-0.6B-Base/raw/main/tokenizer_config.json
-   #gg_wget models-mnt/qwen3/0.6B/ https://huggingface.co/Qwen/Qwen3-0.6B-Base/raw/main/special_tokens_map.json
-    gg_wget models-mnt/qwen3/0.6B/ https://huggingface.co/Qwen/Qwen3-0.6B-Base/resolve/main/model.safetensors
+    gg_wget models-mnt/qwen3/0.6B/ ${HF_URL}/Qwen/Qwen3-0.6B-Base/resolve/main/config.json
+    gg_wget models-mnt/qwen3/0.6B/ ${HF_URL}/Qwen/Qwen3-0.6B-Base/resolve/main/tokenizer.json
+    gg_wget models-mnt/qwen3/0.6B/ ${HF_URL}/Qwen/Qwen3-0.6B-Base/resolve/main/tokenizer_config.json
+   #gg_wget models-mnt/qwen3/0.6B/ ${HF_URL}/Qwen/Qwen3-0.6B-Base/resolve/main/special_tokens_map.json
+    gg_wget models-mnt/qwen3/0.6B/ ${HF_URL}/Qwen/Qwen3-0.6B-Base/resolve/main/model.safetensors
 
 
-    gg_wget models-mnt/wikitext/ https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip
+    gg_wget models-mnt/wikitext/ ${HF_URL}/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip
 
     rm -rf $OUT/scratch/qwen3-0.6B $OUT/scratch/wikitext
     mkdir -p $OUT/scratch/qwen3-0.6B
@@ -458,17 +462,17 @@ function gg_run_qwen3_0_6b {
 function gg_run_embd_bge_small {
     cd ${SRC}
 
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/config.json
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/tokenizer.json
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/tokenizer_config.json
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/special_tokens_map.json
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/pytorch_model.bin
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/sentence_bert_config.json
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/vocab.txt
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/modules.json
-    gg_wget models-mnt/bge-small/ https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/config.json
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/config.json
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/tokenizer_config.json
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/special_tokens_map.json
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/pytorch_model.bin
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/sentence_bert_config.json
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/vocab.txt
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/modules.json
+    gg_wget models-mnt/bge-small/ ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/config.json
 
-    gg_wget models-mnt/bge-small/1_Pooling https://huggingface.co/BAAI/bge-small-en-v1.5/raw/main/1_Pooling/config.json
+    gg_wget models-mnt/bge-small/1_Pooling ${HF_URL}/BAAI/bge-small-en-v1.5/resolve/main/1_Pooling/config.json
 
     path_models="../models-mnt/bge-small"
     path_local="$OUT/scratch/bge-small"
@@ -503,12 +507,12 @@ function gg_run_embd_bge_small {
 function gg_run_rerank_tiny {
     cd ${SRC}
 
-    gg_wget models-mnt/rerank-tiny/ https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/raw/main/config.json
-    gg_wget models-mnt/rerank-tiny/ https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/raw/main/tokenizer.json
-    gg_wget models-mnt/rerank-tiny/ https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/raw/main/tokenizer_config.json
-    gg_wget models-mnt/rerank-tiny/ https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/raw/main/special_tokens_map.json
-    gg_wget models-mnt/rerank-tiny/ https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/resolve/main/pytorch_model.bin
-    gg_wget models-mnt/rerank-tiny/ https://huggingface.co/jinaai/jina-reranker-v1-tiny-en/raw/main/vocab.json
+    gg_wget models-mnt/rerank-tiny/ ${HF_URL}/jinaai/jina-reranker-v1-tiny-en/resolve/main/config.json
+    gg_wget models-mnt/rerank-tiny/ ${HF_URL}/jinaai/jina-reranker-v1-tiny-en/resolve/main/tokenizer.json
+    gg_wget models-mnt/rerank-tiny/ ${HF_URL}/jinaai/jina-reranker-v1-tiny-en/resolve/main/tokenizer_config.json
+    gg_wget models-mnt/rerank-tiny/ ${HF_URL}/jinaai/jina-reranker-v1-tiny-en/resolve/main/special_tokens_map.json
+    gg_wget models-mnt/rerank-tiny/ ${HF_URL}/jinaai/jina-reranker-v1-tiny-en/resolve/main/pytorch_model.bin
+    gg_wget models-mnt/rerank-tiny/ ${HF_URL}/jinaai/jina-reranker-v1-tiny-en/resolve/main/vocab.json
 
     path_models="../models-mnt/rerank-tiny"
     path_local="$OUT/scratch/rerank-tiny"

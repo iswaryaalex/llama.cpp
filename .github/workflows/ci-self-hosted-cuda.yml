@@ -129,7 +129,7 @@ jobs:
       - name: Setup TheRock with Wheels
         run: |
           python3 -m venv "$RUNNER_TEMP/rocm"
-          "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "rocm[libraries,devel,device-${{ matrix.gpu }}]==${ROCM_VERSION}"
+          "$RUNNER_TEMP/rocm/bin/python" -m pip install --index-url "${GG_ROCM_PIP_INDEX:-https://stable.repo.amd.com/rocm/whl-next/}" "rocm[libraries,devel,device-${{ matrix.gpu }}]==${ROCM_VERSION}"
           ROCM_PATH=$("$RUNNER_TEMP/rocm/bin/rocm-sdk" path --root)
           {
             echo "ROCM_PATH=$ROCM_PATH"
@@ -172,7 +172,7 @@ jobs:
           # Exported rather than set in env:, because ggml only checks that the
           # variable is defined: an empty value would disable graphs on gfx1151 too.
           if [ "${{ matrix.disable_hip_graphs }}" = "true" ]; then export GGML_CUDA_DISABLE_GRAPHS=1; fi
-          GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=${{ matrix.gpu }} bash ./ci/run.sh "$RUNNER_TEMP/results/llama.cpp" "$RUNNER_TEMP/mnt/llama.cpp"
+          GG_BUILD_ROCM=1 GG_BUILD_AMDGPU_TARGETS=${{ matrix.gpu }} bash ./ci/run.sh "$RUNNER_TEMP/results/llama.cpp" "${GG_CI_MNT:-$RUNNER_TEMP/mnt}/llama.cpp"
 
       - name: ccache-buckets-save
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
